@@ -1,46 +1,23 @@
 # 📦 Built-in modules
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
 import urllib.parse
+import asyncio
 import os
 
 # 📥 Custom modules
 from rich.progress import (
-    Progress,
-    BarColumn,
-    TextColumn,
-    DownloadColumn,
-    TransferSpeedColumn,
-    TimeRemainingColumn,
-    TaskID
+	Progress,
+	BarColumn,
+	TextColumn,
+	DownloadColumn,
+	TransferSpeedColumn,
+	TimeRemainingColumn
 )
 from .Logger import Logger, Console
 from .Config import Config
-import requests
+import httpx
 
-# 💡 Worker function to download a single file.
-def _DownloadFile(Url: str, DownloadDirectory: str, ProgressBar: Progress, TaskId: TaskID, Lock: Lock, TotalFiles: int, CompletedFiles: dict):
-	LocalFilename = urllib.parse.unquote(Url.split('/')[-1])
-	FilePath = os.path.join(DownloadDirectory, LocalFilename)
-
-	try:
-		with requests.get(Url, stream=True, headers=Config.Headers, timeout=30) as Response:
-			Response.raise_for_status()
-			with open(FilePath, 'wb') as File:
-				for Chunk in Response.iter_content(chunk_size=Config.DownloadChunkSize):
-					File.write(Chunk)
-					ProgressBar.update(TaskId, advance=len(Chunk))
-		Logger.info(f'Successfully downloaded: {LocalFilename}')
-	except requests.RequestException as E:
-		Logger.error(f'Failed to download {LocalFilename}: {E}')
-	finally:
-		with Lock:
-			CompletedFiles['count'] += 1
-			Count = CompletedFiles['count']
-			ProgressBar.update(TaskId, description=f'[green]Downloading... ({Count}/{TotalFiles})')
-
-# 💡 Download files concurrently using a unified progress bar.
-def DownloadFiles(Urls: list[str], AlbumId: str):
+# 💡 Download files concurrently with a themed progress bar, retries, and validation.
+async def DownloadFiles(Urls: list[str], AlbumId: str, MaxConcurrency: int = Config.MaxWorkers, MaxRetries: int = 3):
 	# 🌱 Prepare directory
 	DownloadDirectory = AlbumId
 	if not os.path.exists(DownloadDirectory):
@@ -48,7 +25,10 @@ def DownloadFiles(Urls: list[str], AlbumId: str):
 		Logger.info(f'Created directory: {DownloadDirectory}')
 
 	# 🌱 Filter out files that already exist
-	UrlsToDownload = [Url for Url in Urls if not os.path.exists(os.path.join(DownloadDirectory, urllib.parse.unquote(Url.split('/')[-1])))]
+	UrlsToDownload = [
+		Url for Url in Urls 
+		if not os.path.exists(os.path.join(DownloadDirectory, urllib.parse.unquote(Url.split('/')[-1])))
+	]
 	SkippedCount = len(Urls) - len(UrlsToDownload)
 	if SkippedCount > 0:
 		Logger.info(f'Skipped {SkippedCount} files that already exist.')
@@ -57,37 +37,65 @@ def DownloadFiles(Urls: list[str], AlbumId: str):
 		Logger.info('All files are already downloaded.')
 		return
 
-	# 🌱 Get total size for the progress bar
-	TotalSize = 0
-	with ThreadPoolExecutor(max_workers=Config.MaxWorkers) as Executor:
-		Futures = [Executor.submit(requests.head, Url, headers=Config.Headers, timeout=10) for Url in UrlsToDownload]
-		for Future in as_completed(Futures):
-			try:
-				Response = Future.result()
-				TotalSize += int(Response.headers.get('content-length', 0))
-			except requests.RequestException:
-				TotalSize += 0 # Can't determine size, will be handled as 0
-
-	# 🌱 Single progress bar for concurrent downloads
+	# 🌱 Set up themed progress bar (matching logger colors)
 	with Progress(
-		TextColumn('{task.description}', justify='left'),
-		BarColumn(bar_width=None),
-		'[progress.percentage]{task.percentage:>3.1f}%',
-		TextColumn('•'),
+		TextColumn('[progress.description]{task.description}', style='logging.level.info'),
+		BarColumn(bar_width=None, complete_style='logging.level.info', finished_style='logging.level.info'),
+		TextColumn('[progress.percentage]{task.percentage:>3.1f}%', style='logging.level.info'),
+		TextColumn('•', style='bright_black'),
 		DownloadColumn(),
-		TextColumn('•'),
+		TextColumn('•', style='bright_black'),
 		TransferSpeedColumn(),
-		TextColumn('•'),
+		TextColumn('•', style='bright_black'),
 		TimeRemainingColumn(),
 		console=Console
 	) as ProgressBar:
-		TotalFiles = len(UrlsToDownload)
-		InitialDescription = f'[green]Downloading... (0/{TotalFiles})'
-		TaskId = ProgressBar.add_task(InitialDescription, total=TotalSize)
-		CompletedFiles = {'count': 0}
-		Locker = Lock()
+		# 🌱 Semaphore for concurrency control
+		Semaphore = asyncio.Semaphore(MaxConcurrency)
+		Tasks = []
 
-		with ThreadPoolExecutor(max_workers=Config.MaxWorkers) as Executor:
-			Futures = [Executor.submit(_DownloadFile, Url, DownloadDirectory, ProgressBar, TaskId, Locker, TotalFiles, CompletedFiles) for Url in UrlsToDownload]
-			for Future in as_completed(Futures):
-				Future.result()
+		async def DownloadSingle(Url: str, Index: int, TotalFiles: int):
+			async with Semaphore:
+				LocalFilename = urllib.parse.unquote(Url.split('/')[-1])
+				FilePath = os.path.join(DownloadDirectory, LocalFilename)
+				Description = f'({Index + 1}/{TotalFiles}) {LocalFilename}'
+				TaskId = ProgressBar.add_task(Description, total=1)  # Placeholder total
+
+				for Attempt in range(MaxRetries):
+					try:
+						async with httpx.AsyncClient(headers=Config.Headers, timeout=30.0, http2=True) as Client:
+							async with Client.stream('GET', Url) as Response:
+								Response.raise_for_status()
+								TotalSize = int(Response.headers.get('Content-Length', 0))
+								ProgressBar.update(TaskId, total=TotalSize)
+
+								with open(FilePath, 'wb') as File:
+									DownloadedSize = 0
+									async for Chunk in Response.aiter_bytes(chunk_size=Config.DownloadChunkSize):
+										File.write(Chunk)
+										DownloadedSize += len(Chunk)
+										ProgressBar.update(TaskId, advance=len(Chunk))
+
+								# 🧪 Validate file size
+								if TotalSize > 0 and DownloadedSize != TotalSize:
+									raise ValueError(f'Size mismatch: expected {TotalSize}, got {DownloadedSize}')
+
+								ProgressBar.update(TaskId, description=f'[green]✓ {Description}')
+								Logger.info(f'Successfully downloaded: {LocalFilename}')
+								return
+
+					except (httpx.RequestError, httpx.TimeoutException, ValueError) as E:
+						if Attempt == MaxRetries - 1:
+							ProgressBar.update(TaskId, description=f'[red]✗ Failed: {LocalFilename}', completed=1)
+							Logger.error(f'Failed to download {LocalFilename} after {MaxRetries} retries: {E}')
+						else:
+							Logger.warning(f'Retry {Attempt + 1}/{MaxRetries} for {LocalFilename}: {E}')
+							await asyncio.sleep(1)  # Brief delay before retry
+
+		# 🌱 Create and run tasks
+		TotalFiles = len(UrlsToDownload)
+		for Index, Url in enumerate(UrlsToDownload):
+			Task = asyncio.create_task(DownloadSingle(Url, Index, TotalFiles))
+			Tasks.append(Task)
+
+		await asyncio.gather(*Tasks)

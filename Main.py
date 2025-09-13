@@ -1,7 +1,7 @@
 # 📦 Built-in modules
 import urllib.parse
 import argparse
-import requests
+import asyncio
 import html
 import sys
 import os
@@ -14,6 +14,7 @@ from Utils.Unpacker import UnpackScript
 from Utils.Config import Config
 from Utils.Logger import Logger
 from bs4 import BeautifulSoup
+import httpx
 
 # 💡 Fully unquote a URL string by repeatedly decoding it.
 def FullyUnquote(Url: str) -> str:
@@ -70,48 +71,49 @@ def GenerateDownloadLinks(LinkIds: list[tuple[str, str, int, int]], AlbumId: str
 		Links.append(Url)
 	return Links
 
-# 💡 Fetch content from a URL and extract link IDs.
-def ExtractFromUrl(Url: str) -> list[tuple[str, str, int, int]]:
+# 💡 Fetch content from a URL and extract link IDs (async).
+async def ExtractFromUrl(Url: str) -> list[tuple[str, str, int, int]]:
 	try:
-		Response = requests.get(Url, headers=Config.Headers)
-		Response.raise_for_status()
-		Soup = BeautifulSoup(Response.content, 'html.parser')
+		async with httpx.AsyncClient(headers=Config.Headers, timeout=30.0, http2=True) as Client:
+			Response = await Client.get(Url)
+			Response.raise_for_status()
+			Soup = BeautifulSoup(Response.content, 'html.parser')
 
-		# 🌱 Create a map of track names to their disc and track numbers from the HTML.
-		TrackInfoMap = {}
-		TrackLinks = Soup.select(Config.TracklistSelector)
-		for Link in TrackLinks:
-			# 💡 Decode HTML entities from the track name in the link text.
-			TrackName = html.unescape(Link.text)
-			Href = Link.get('href', '')
-			# 💡 Fully unquote to handle any level of URL encoding.
-			DecodedHref = FullyUnquote(Href) # type: ignore
-			Match = re.search(Config.TrackFilePattern, os.path.basename(DecodedHref))
-			if Match:
-				Disc, Track = map(int, Match.groups())
-				TrackInfoMap[TrackName] = (Disc, Track)
-			else:
-				Logger.warning(f'Could not parse track info from href: {Href}')
+			# 🌱 Create a map of track names to their disc and track numbers from the HTML.
+			TrackInfoMap = {}
+			TrackLinks = Soup.select(Config.TracklistSelector)
+			for Link in TrackLinks:
+				# 💡 Decode HTML entities from the track name in the link text.
+				TrackName = html.unescape(Link.text)
+				Href = Link.get('href', '')
+				# 💡 Fully unquote to handle any level of URL encoding.
+				DecodedHref = FullyUnquote(Href) # type: ignore
+				Match = re.search(Config.TrackFilePattern, os.path.basename(DecodedHref))
+				if Match:
+					Disc, Track = map(int, Match.groups())
+					TrackInfoMap[TrackName] = (Disc, Track)
+				else:
+					Logger.warning(f'Could not parse track info from href: {Href}')
 
-		ScriptTags = Soup.select(Config.PageContentSelector)
-		if not ScriptTags:
-			Logger.error(f'ExtractFromUrl: No script tags found in div#pageContent at {Url}')
-			return []
-		ScriptContent = next((Tag.string for Tag in ScriptTags if Tag.string and Config.PackedScriptIdentifier in Tag.string), None)
-		if not ScriptContent:
-			Logger.error(f'ExtractFromUrl: No packed script found at {Url}')
-			return []
-		LinkIds = []
-		for Packed, A, C, K in ExtractPackedStrings(ScriptContent):
-			Unpacked = UnpackScript(Packed, A, C, K)
-			LinkIds.extend(ExtractLinkIds(Unpacked, TrackInfoMap))
-		return LinkIds
-	except requests.exceptions.RequestException as E:
+			ScriptTags = Soup.select(Config.PageContentSelector)
+			if not ScriptTags:
+				Logger.error(f'ExtractFromUrl: No script tags found in div#pageContent at {Url}')
+				return []
+			ScriptContent = next((Tag.string for Tag in ScriptTags if Tag.string and Config.PackedScriptIdentifier in Tag.string), None)
+			if not ScriptContent:
+				Logger.error(f'ExtractFromUrl: No packed script found at {Url}')
+				return []
+			LinkIds = []
+			for Packed, A, C, K in ExtractPackedStrings(ScriptContent):
+				Unpacked = UnpackScript(Packed, A, C, K)
+				LinkIds.extend(ExtractLinkIds(Unpacked, TrackInfoMap))
+			return LinkIds
+	except httpx.RequestError as E:
 		Logger.error(f'ExtractFromUrl: Failed to fetch URL {Url}: {E}')
 		return []
 
-# 🧪 Main execution logic
-def Main():
+# 🧪 Main execution logic (async)
+async def Main():
 	# 🌱 Set up a rich-formatted argument parser
 	class CustomFormatter(RichHelpFormatter):
 		"""Custom help formatter to tweak rich's output."""
@@ -148,7 +150,7 @@ def Main():
 
 	# 🌱 Start the extraction and download process
 	Logger.info(f'Extracting from: {AlbumId}')
-	LinkIds = ExtractFromUrl(AlbumUrl)
+	LinkIds = await ExtractFromUrl(AlbumUrl)
 	if LinkIds:
 		Logger.info(f'Extracted {len(LinkIds)} tracks spread over {len(set(Disc for _, _, _, Disc in LinkIds))} discs.')
 		DownloadLinks = GenerateDownloadLinks(LinkIds, AlbumId)
@@ -156,7 +158,7 @@ def Main():
 		for Link in DownloadLinks:
 			Logger.info(f'  - {Link}')
 		Logger.info('Starting download...')
-		DownloadFiles(DownloadLinks, AlbumId)
+		await DownloadFiles(DownloadLinks, AlbumId)
 		Logger.info('All downloads completed.')
 	else:
 		Logger.warning('Could not extract any song IDs.')
@@ -164,7 +166,7 @@ def Main():
 # 🚀 Script entry point
 if __name__ == '__main__':
 	try:
-		Main()
+		asyncio.run(Main())
 	except KeyboardInterrupt:
 		Logger.info('Operation cancelled by user.')
 		exit(0)
