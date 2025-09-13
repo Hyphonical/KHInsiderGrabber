@@ -1,5 +1,4 @@
 # 📦 Built-in modules
-import urllib.parse
 import asyncio
 import os
 
@@ -17,7 +16,7 @@ from .Config import Config
 import httpx
 
 # 💡 Download files concurrently with a themed progress bar, retries, and validation.
-async def DownloadFiles(Urls: list[str], AlbumId: str, MaxConcurrency: int = Config.MaxWorkers, MaxRetries: int = 3):
+async def DownloadFiles(Urls: list[tuple[str, list[str]]], AlbumId: str, MaxConcurrency: int = Config.MaxWorkers, MaxRetries: int = 3):
 	# 🌱 Prepare directory
 	DownloadDirectory = AlbumId
 	if not os.path.exists(DownloadDirectory):
@@ -26,8 +25,8 @@ async def DownloadFiles(Urls: list[str], AlbumId: str, MaxConcurrency: int = Con
 
 	# 🌱 Filter out files that already exist
 	UrlsToDownload = [
-		Url for Url in Urls 
-		if not os.path.exists(os.path.join(DownloadDirectory, urllib.parse.unquote(Url.split('/')[-1])))
+		(Filename, UrlList) for Filename, UrlList in Urls 
+		if not os.path.exists(os.path.join(DownloadDirectory, Filename))
 	]
 	SkippedCount = len(Urls) - len(UrlsToDownload)
 	if SkippedCount > 0:
@@ -54,50 +53,56 @@ async def DownloadFiles(Urls: list[str], AlbumId: str, MaxConcurrency: int = Con
 		Semaphore = asyncio.Semaphore(MaxConcurrency)
 		Tasks = []
 
-		async def DownloadSingle(Url: str, Index: int, TotalFiles: int):
+		async def DownloadSingle(Filename: str, UrlList: list[str], Index: int, TotalFiles: int):
 			async with Semaphore:
-				LocalFilename = urllib.parse.unquote(Url.split('/')[-1])
-				FilePath = os.path.join(DownloadDirectory, LocalFilename)
-				Description = f'({Index + 1}/{TotalFiles}) {LocalFilename}'
+				FilePath = os.path.join(DownloadDirectory, Filename)
+				Description = f'({Index + 1}/{TotalFiles}) {Filename}'
 				TaskId = ProgressBar.add_task(Description, total=1)  # Placeholder total
 
-				for Attempt in range(MaxRetries):
-					try:
-						async with httpx.AsyncClient(headers=Config.Headers, timeout=30.0, http2=True) as Client:
-							async with Client.stream('GET', Url) as Response:
-								Response.raise_for_status()
-								TotalSize = int(Response.headers.get('Content-Length', 0))
-								ProgressBar.update(TaskId, total=TotalSize)
+				for Url in UrlList:
+					for Attempt in range(MaxRetries):
+						try:
+							async with httpx.AsyncClient(headers=Config.Headers, timeout=30.0, http2=True) as Client:
+								async with Client.stream('GET', Url) as Response:
+									Response.raise_for_status()
+									TotalSize = int(Response.headers.get('Content-Length', 0))
+									ProgressBar.update(TaskId, total=TotalSize)
 
-								with open(FilePath, 'wb') as File:
-									DownloadedSize = 0
-									async for Chunk in Response.aiter_bytes(chunk_size=Config.DownloadChunkSize):
-										File.write(Chunk)
-										DownloadedSize += len(Chunk)
-										ProgressBar.update(TaskId, advance=len(Chunk))
+									with open(FilePath, 'wb') as File:
+										DownloadedSize = 0
+										async for Chunk in Response.aiter_bytes(chunk_size=Config.DownloadChunkSize):
+											File.write(Chunk)
+											DownloadedSize += len(Chunk)
+											ProgressBar.update(TaskId, advance=len(Chunk))
 
-								# 🧪 Validate file size
-								if TotalSize > 0 and DownloadedSize != TotalSize:
-									raise ValueError(f'Size mismatch: expected {TotalSize}, got {DownloadedSize}')
+									# 🧪 Validate file size
+									if TotalSize > 0 and DownloadedSize != TotalSize:
+										raise ValueError(f'Size mismatch: expected {TotalSize}, got {DownloadedSize}')
 
-								ProgressBar.update(TaskId, description=f'[green]✓ {Description}')
-								Logger.info(f'Successfully downloaded: {LocalFilename}')
-								ProgressBar.remove_task(TaskId)  # Remove completed task
-								return
+									ProgressBar.update(TaskId, description=f'[green]✓ {Description}')
+									Logger.info(f'Successfully downloaded: {Filename}')
+									ProgressBar.remove_task(TaskId)  # Remove completed task
+									return
 
-					except (httpx.RequestError, httpx.TimeoutException, ValueError) as E:
-						if Attempt == MaxRetries - 1:
-							ProgressBar.update(TaskId, description=f'[red]✗ Failed: {LocalFilename}', completed=1)
-							Logger.error(f'Failed to download {LocalFilename} after {MaxRetries} retries: {E}')
-							ProgressBar.remove_task(TaskId)  # Remove failed task
-						else:
-							Logger.warning(f'Retry {Attempt + 1}/{MaxRetries} for {LocalFilename}: {E}')
-							await asyncio.sleep(1)  # Brief delay before retry
+						except (httpx.RequestError, httpx.TimeoutException, ValueError) as E:
+							if Attempt == MaxRetries - 1:
+								Logger.warning(f'Failed attempt for {Filename} with URL {Url}: {E}')
+							else:
+								Logger.warning(f'Retry {Attempt + 1}/{MaxRetries} for {Filename} with URL {Url}: {E}')
+								await asyncio.sleep(1)  # Brief delay before retry
+					else:
+						continue  # Try next URL
+					break  # Success, exit URL loop
+				else:
+					# All URLs failed
+					ProgressBar.update(TaskId, description=f'[red]✗ Failed: {Filename}', completed=1)
+					Logger.error(f'Failed to download {Filename} after trying all URLs.')
+					ProgressBar.remove_task(TaskId)  # Remove failed task
 
 		# 🌱 Create and run tasks
 		TotalFiles = len(UrlsToDownload)
-		for Index, Url in enumerate(UrlsToDownload):
-			Task = asyncio.create_task(DownloadSingle(Url, Index, TotalFiles))
+		for Index, (Filename, UrlList) in enumerate(UrlsToDownload):
+			Task = asyncio.create_task(DownloadSingle(Filename, UrlList, Index, TotalFiles))
 			Tasks.append(Task)
 
 		await asyncio.gather(*Tasks)

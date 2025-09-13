@@ -31,7 +31,7 @@ def ExtractPackedStrings(ScriptContent: str) -> list:
 	return [(Packed, int(A), int(C), KStr.split('|')) for Packed, A, C, KStr in Matches]
 
 # 💡 Extract link IDs from the unpacked script.
-def ExtractLinkIds(UnpackedScript: str, TrackInfoMap: dict) -> list[tuple[str, str, int, int]]:
+def ExtractLinkIds(UnpackedScript: str, TrackInfoMap: dict) -> list[tuple[str, str, int, int, str]]:
 	# 🌱 Find all track entries using the pattern matching the unpacked script structure.
 	Matches = re.findall(Config.TrackInfoPattern, UnpackedScript)
 	LinkIds = []
@@ -50,26 +50,34 @@ def ExtractLinkIds(UnpackedScript: str, TrackInfoMap: dict) -> list[tuple[str, s
 					Logger.warning(f'Could not find track "{Name}" in the page tracklist.')
 	return LinkIds
 
-# 💡 Generate download links from extracted IDs.
-def GenerateDownloadLinks(LinkIds: list[tuple[str, str, int, int, str]], AlbumId: str) -> list[str]:
-	# 🌱 Build full download URLs using filenames from the page, replacing .mp3 with .flac.
+# 💡 Generate download links from extracted IDs with fallback URLs.
+def GenerateDownloadLinks(LinkIds: list[tuple[str, str, int, int, str]], AlbumId: str, BaseUrls: list[str]) -> list[tuple[str, list[str]]]:
+	# 🌱 Build full download URLs using filenames from the page, replacing .mp3 with .flac, with fallbacks.
 	if not LinkIds:
 		return []
 	Links = []
 	for Name, LinkId, Track, Disc, Filename in LinkIds:
 		FlacFilename = Filename.replace('.mp3', '.flac')
 		EncodedFilename = urllib.parse.quote(FlacFilename, safe='/')
-		Url = f'{Config.BaseUrl}/{AlbumId}/{LinkId}/{EncodedFilename}'
-		Links.append(Url)
+		UrlList = [f'{Base}/{AlbumId}/{LinkId}/{EncodedFilename}' for Base in BaseUrls]
+		Links.append((FlacFilename, UrlList))
 	return Links
 
-# 💡 Fetch content from a URL and extract link IDs (async).
-async def ExtractFromUrl(Url: str) -> list[tuple[str, str, int, int, str]]:
+# 💡 Fetch content from a URL and extract link IDs with base URLs (async).
+async def ExtractFromUrl(Url: str) -> tuple[list[tuple[str, str, int, int, str]], list[str]]:
 	try:
 		async with httpx.AsyncClient(headers=Config.Headers, timeout=30.0, http2=True) as Client:
 			Response = await Client.get(Url)
 			Response.raise_for_status()
 			Soup = BeautifulSoup(Response.content, 'html.parser')
+
+			# 🌱 Extract unique prefixes for vgmsite URLs from the page.
+			Prefixes = set(re.findall(r'https?://([a-z]*)\.?vgmsite\.com', str(Soup)))
+			BaseUrls = [f'https://{Prefix}vgmsite.com/soundtracks' if Prefix else 'https://vgmsite.com/soundtracks' for Prefix in Prefixes]
+			if not BaseUrls:
+				BaseUrls = ['https://vgmsite.com/soundtracks']
+			Logger.info(f'Found prefixes: {list(Prefixes)}')
+			Logger.info(f'Using base URLs: {BaseUrls}')
 
 			# 🌱 Create a map of track names to their disc, track, and filename from the HTML.
 			TrackInfoMap = {}
@@ -99,19 +107,19 @@ async def ExtractFromUrl(Url: str) -> list[tuple[str, str, int, int, str]]:
 			ScriptTags = Soup.select(Config.PageContentSelector)
 			if not ScriptTags:
 				Logger.error(f'ExtractFromUrl: No script tags found in div#pageContent at {Url}')
-				return []
+				return [], BaseUrls
 			ScriptContent = next((Tag.string for Tag in ScriptTags if Tag.string and Config.PackedScriptIdentifier in Tag.string), None)
 			if not ScriptContent:
 				Logger.error(f'ExtractFromUrl: No packed script found at {Url}')
-				return []
+				return [], BaseUrls
 			LinkIds = []
 			for Packed, A, C, K in ExtractPackedStrings(ScriptContent):
 				Unpacked = UnpackScript(Packed, A, C, K)
 				LinkIds.extend(ExtractLinkIds(Unpacked, TrackInfoMap))
-			return LinkIds
+			return LinkIds, BaseUrls
 	except httpx.RequestError as E:
 		Logger.error(f'ExtractFromUrl: Failed to fetch URL {Url}: {E}')
-		return []
+		return [], []
 
 # 🧪 Main execution logic (async)
 async def Main():
@@ -151,13 +159,13 @@ async def Main():
 
 	# 🌱 Start the extraction and download process
 	Logger.info(f'Extracting from: {AlbumId}')
-	LinkIds = await ExtractFromUrl(AlbumUrl)
+	LinkIds, BaseUrls = await ExtractFromUrl(AlbumUrl)
 	if LinkIds:
 		Logger.info(f'Extracted {len(LinkIds)} tracks spread over {len(set(Disc for _, _, _, Disc, _ in LinkIds))} discs.')
-		DownloadLinks = GenerateDownloadLinks(LinkIds, AlbumId)
+		DownloadLinks = GenerateDownloadLinks(LinkIds, AlbumId, BaseUrls)
 		Logger.info('Generated download links:')
-		for Link in DownloadLinks:
-			Logger.info(f'  - {Link}')
+		for Filename, UrlList in DownloadLinks:
+			Logger.info(f'  - {Filename}: {len(UrlList)} fallback(s)')
 		Logger.info('Starting download...')
 		await DownloadFiles(DownloadLinks, AlbumId)
 		Logger.info('All downloads completed.')
