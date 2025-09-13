@@ -57,10 +57,16 @@ def InitLogging():
 	RichLogger.addHandler(ConsoleHandler)
 	RichLogger.propagate = False
 
-	return Console, RichLogger, ConsoleHandler
+	HttpxLogger = logging.getLogger('httpx')
+	HttpxLogger.handlers.clear()
+	HttpxLogger.addHandler(ConsoleHandler)
+	HttpxLogger.propagate = False
+	HttpxLogger.setLevel(logging.WARNING)
+
+	return Console, RichLogger, ConsoleHandler, HttpxLogger
 
 
-Console, Logger, ConsoleHandler = InitLogging()
+Console, Logger, ConsoleHandler, HttpxLogger = InitLogging()
 Install()
 
 # 🧪 Logging test messages

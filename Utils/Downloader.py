@@ -82,12 +82,14 @@ async def DownloadFiles(Urls: list[str], AlbumId: str, MaxConcurrency: int = Con
 
 								ProgressBar.update(TaskId, description=f'[green]✓ {Description}')
 								Logger.info(f'Successfully downloaded: {LocalFilename}')
+								ProgressBar.remove_task(TaskId)  # Remove completed task
 								return
 
 					except (httpx.RequestError, httpx.TimeoutException, ValueError) as E:
 						if Attempt == MaxRetries - 1:
 							ProgressBar.update(TaskId, description=f'[red]✗ Failed: {LocalFilename}', completed=1)
 							Logger.error(f'Failed to download {LocalFilename} after {MaxRetries} retries: {E}')
+							ProgressBar.remove_task(TaskId)  # Remove failed task
 						else:
 							Logger.warning(f'Retry {Attempt + 1}/{MaxRetries} for {LocalFilename}: {E}')
 							await asyncio.sleep(1)  # Brief delay before retry
