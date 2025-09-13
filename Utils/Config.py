@@ -4,7 +4,6 @@ class Config:
 	Headers = {'User-Agent': 'KHInsider/1.0'}
 	BaseUrl = 'https://vgmsite.com/soundtracks'
 	DownloadChunkSize = 8192
-	DryRun = False
 
 	# 🌱 Regex Patterns
 	PackedStringPattern = (
