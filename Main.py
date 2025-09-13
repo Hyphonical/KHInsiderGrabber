@@ -59,7 +59,8 @@ def GenerateDownloadLinks(LinkIds: list[tuple[str, str, int, int]], AlbumId: str
 	Links = []
 	for Name, LinkId, Track, Disc in LinkIds:
 		Filename = f'{Disc}-{Track:0{Digits}d}. {Name}.flac'
-		EncodedFilename = urllib.parse.quote(Filename)
+		# 💡 URL encode the filename, but keep slashes for the path.
+		EncodedFilename = urllib.parse.quote(Filename, safe='/')
 		Url = f'{Config.BaseUrl}/{AlbumId}/{LinkId}/{EncodedFilename}'
 		Links.append(Url)
 	return Links
@@ -115,7 +116,7 @@ def Main():
 
 	Parser = argparse.ArgumentParser(
 		description='🎵 A script to download FLAC albums from downloads.khinsider.com.',
-		epilog='Example: python Main.py "https://downloads.khinsider.com/game-soundtracks/album/super-mario-galaxy-2"',
+		epilog='Example: python Main.py https://downloads.khinsider.com/game-soundtracks/album/super-mario-galaxy-2',
 		formatter_class=CustomFormatter
 	)
 	Parser.add_argument(
