@@ -24,3 +24,6 @@ class Config:
 	PackedScriptIdentifier = 'eval(function(p,a,c,k,e,d)'
 	ValidUrlDomains = ['vgmsite.com', 'khinsider.com']
 	TracklistSelector = 'table#songlist a[href$=".mp3"]'
+
+	# 🌱 Downloading
+	MaxWorkers = 2

@@ -106,8 +106,8 @@ def ExtractFromUrl(Url: str) -> list[tuple[str, str, int, int]]:
 			Unpacked = UnpackScript(Packed, A, C, K)
 			LinkIds.extend(ExtractLinkIds(Unpacked, TrackInfoMap))
 		return LinkIds
-	except requests.exceptions.RequestException as e:
-		Logger.error(f'ExtractFromUrl: Failed to fetch URL {Url}: {e}')
+	except requests.exceptions.RequestException as E:
+		Logger.error(f'ExtractFromUrl: Failed to fetch URL {Url}: {E}')
 		return []
 
 # 🧪 Main execution logic
