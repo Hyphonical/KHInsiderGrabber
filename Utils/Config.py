@@ -26,4 +26,4 @@ class Config:
 	TracklistSelector = 'table#songlist a[href$=".mp3"]'
 
 	# 🌱 Downloading
-	MaxWorkers = 2
+	MaxWorkers = 4
