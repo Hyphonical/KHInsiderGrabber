@@ -51,15 +51,20 @@ def ExtractLinkIds(UnpackedScript: str, TrackInfoMap: dict) -> list[tuple[str, s
 
 # 💡 Generate download links from extracted IDs.
 def GenerateDownloadLinks(LinkIds: list[tuple[str, str, int, int]], AlbumId: str) -> list[str]:
-	# 🌱 Build full download URLs with dynamic track number formatting.
+	# 🌱 Build full download URLs.
+	# 📌 Rule:
+	#    - Tracks 1..9: zero-pad to 2 digits (01..09)
+	#    - Tracks >=10: no extra padding (10, 99, 100, 171, 1000, ...)
+	#    - Disc stays unpadded.
+	#    - Separator: '<Disc>-<Track> <Title>.flac' (SPACE, no dot after track).
 	if not LinkIds:
 		return []
-	MaxTrack = max(Track for _, _, Track, _ in LinkIds)
-	Digits = len(str(MaxTrack))
 	Links = []
 	for Name, LinkId, Track, Disc in LinkIds:
-		Filename = f'{Disc}-{Track:0{Digits}d}. {Name}.flac'
-		# 💡 URL encode the filename, but keep slashes for the path.
+		TrackStr = str(Track)
+		if len(TrackStr) == 1:
+			TrackStr = TrackStr.zfill(2)
+		Filename = f'{Disc}-{TrackStr} {Name}.flac'
 		EncodedFilename = urllib.parse.quote(Filename, safe='/')
 		Url = f'{Config.BaseUrl}/{AlbumId}/{LinkId}/{EncodedFilename}'
 		Links.append(Url)
