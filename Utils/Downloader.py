@@ -15,6 +15,10 @@ from .Logger import Logger, Console
 from .Config import Config
 import httpx
 
+# 🌱 Shared variables for optimization
+WorkingBaseUrl = None
+Lock = asyncio.Lock()
+
 # 💡 Download files concurrently with a themed progress bar, retries, and validation.
 async def DownloadFiles(Urls: list[tuple[str, list[str]]], AlbumId: str, MaxConcurrency: int = Config.MaxWorkers, MaxRetries: int = 3):
 	# 🌱 Prepare directory
@@ -54,12 +58,16 @@ async def DownloadFiles(Urls: list[tuple[str, list[str]]], AlbumId: str, MaxConc
 		Tasks = []
 
 		async def DownloadSingle(Filename: str, UrlList: list[str], Index: int, TotalFiles: int):
+			global WorkingBaseUrl
 			async with Semaphore:
 				FilePath = os.path.join(DownloadDirectory, Filename)
 				Description = f'({Index + 1}/{TotalFiles}) {Filename}'
 				TaskId = ProgressBar.add_task(Description, total=1)  # Placeholder total
 
 				for Url in UrlList:
+					async with Lock:
+						if WorkingBaseUrl and not Url.startswith(WorkingBaseUrl):
+							continue  # Skip non-working bases once determined
 					for Attempt in range(MaxRetries):
 						try:
 							async with httpx.AsyncClient(headers=Config.Headers, timeout=30.0, http2=True) as Client:
@@ -81,6 +89,9 @@ async def DownloadFiles(Urls: list[tuple[str, list[str]]], AlbumId: str, MaxConc
 
 									ProgressBar.update(TaskId, description=f'[green]✓ {Description}')
 									Logger.info(f'Successfully downloaded: {Filename}')
+									async with Lock:
+										if not WorkingBaseUrl:
+											WorkingBaseUrl = '/'.join(Url.split('/')[:3]) + '/soundtracks'
 									ProgressBar.remove_task(TaskId)  # Remove completed task
 									return
 
@@ -91,7 +102,7 @@ async def DownloadFiles(Urls: list[tuple[str, list[str]]], AlbumId: str, MaxConc
 								Logger.warning(f'Retry {Attempt + 1}/{MaxRetries} for {Filename} with URL {Url}: {E}')
 								await asyncio.sleep(1)  # Brief delay before retry
 					else:
-						continue  # Try next Url
+						continue  # Try next URL
 					break  # Success, exit URL loop
 				else:
 					# All URLs failed
