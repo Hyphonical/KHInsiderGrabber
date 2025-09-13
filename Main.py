@@ -42,44 +42,36 @@ def ExtractLinkIds(UnpackedScript: str, TrackInfoMap: dict) -> list[tuple[str, s
 			Parts = Url.split('/')
 			if len(Parts) > 4:
 				LinkId = Parts[-2]
-				# 💡 Look up disc and track number from the map created from the HTML.
+				# 💡 Look up disc, track, and filename from the map created from the HTML.
 				if Name in TrackInfoMap:
-					Disc, Track = TrackInfoMap[Name]
-					LinkIds.append((Name, LinkId, Track, Disc))
+					Disc, Track, Filename = TrackInfoMap[Name]
+					LinkIds.append((Name, LinkId, Track, Disc, Filename))
 				else:
 					Logger.warning(f'Could not find track "{Name}" in the page tracklist.')
 	return LinkIds
 
 # 💡 Generate download links from extracted IDs.
-def GenerateDownloadLinks(LinkIds: list[tuple[str, str, int, int]], AlbumId: str) -> list[str]:
-	# 🌱 Build full download URLs.
-	# 📌 Rule:
-	#    - Tracks 1..9: zero-pad to 2 digits (01..09)
-	#    - Tracks >=10: no extra padding (10, 99, 100, 171, 1000, ...)
-	#    - Disc stays unpadded.
-	#    - Separator: '<Disc>-<Track> <Title>.flac' (SPACE, no dot after track).
+def GenerateDownloadLinks(LinkIds: list[tuple[str, str, int, int, str]], AlbumId: str) -> list[str]:
+	# 🌱 Build full download URLs using filenames from the page, replacing .mp3 with .flac.
 	if not LinkIds:
 		return []
 	Links = []
-	for Name, LinkId, Track, Disc in LinkIds:
-		TrackStr = str(Track)
-		if len(TrackStr) == 1:
-			TrackStr = TrackStr.zfill(2)
-		Filename = f'{Disc}-{TrackStr} {Name}.flac'
-		EncodedFilename = urllib.parse.quote(Filename, safe='/')
+	for Name, LinkId, Track, Disc, Filename in LinkIds:
+		FlacFilename = Filename.replace('.mp3', '.flac')
+		EncodedFilename = urllib.parse.quote(FlacFilename, safe='/')
 		Url = f'{Config.BaseUrl}/{AlbumId}/{LinkId}/{EncodedFilename}'
 		Links.append(Url)
 	return Links
 
 # 💡 Fetch content from a URL and extract link IDs (async).
-async def ExtractFromUrl(Url: str) -> list[tuple[str, str, int, int]]:
+async def ExtractFromUrl(Url: str) -> list[tuple[str, str, int, int, str]]:
 	try:
 		async with httpx.AsyncClient(headers=Config.Headers, timeout=30.0, http2=True) as Client:
 			Response = await Client.get(Url)
 			Response.raise_for_status()
 			Soup = BeautifulSoup(Response.content, 'html.parser')
 
-			# 🌱 Create a map of track names to their disc and track numbers from the HTML.
+			# 🌱 Create a map of track names to their disc, track, and filename from the HTML.
 			TrackInfoMap = {}
 			TrackLinks = Soup.select(Config.TracklistSelector)
 			for Link in TrackLinks:
@@ -88,10 +80,11 @@ async def ExtractFromUrl(Url: str) -> list[tuple[str, str, int, int]]:
 				Href = Link.get('href', '')
 				# 💡 Fully unquote to handle any level of URL encoding.
 				DecodedHref = FullyUnquote(Href) # type: ignore
-				Match = re.search(Config.TrackFilePattern, os.path.basename(DecodedHref))
+				Filename = os.path.basename(DecodedHref)
+				Match = re.search(Config.TrackFilePattern, Filename)
 				if Match:
 					Disc, Track = map(int, Match.groups())
-					TrackInfoMap[TrackName] = (Disc, Track)
+					TrackInfoMap[TrackName] = (Disc, Track, Filename)
 				else:
 					Logger.warning(f'Could not parse track info from href: {Href}')
 
@@ -152,7 +145,7 @@ async def Main():
 	Logger.info(f'Extracting from: {AlbumId}')
 	LinkIds = await ExtractFromUrl(AlbumUrl)
 	if LinkIds:
-		Logger.info(f'Extracted {len(LinkIds)} tracks spread over {len(set(Disc for _, _, _, Disc in LinkIds))} discs.')
+		Logger.info(f'Extracted {len(LinkIds)} tracks spread over {len(set(Disc for _, _, _, Disc, _ in LinkIds))} discs.')
 		DownloadLinks = GenerateDownloadLinks(LinkIds, AlbumId)
 		Logger.info('Generated download links:')
 		for Link in DownloadLinks:
