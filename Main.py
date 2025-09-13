@@ -100,9 +100,11 @@ async def ExtractFromUrl(Url: str) -> tuple[list[tuple[str, str, int, int, str]]
 						# Disc-track format
 						Disc = int(Groups[0])
 						Track = int(Groups[1])
-					TrackInfoMap[TrackName] = (Disc, Track, Filename)
 				else:
-					Logger.warning(f'Could not parse track info from href: {Href}')
+					# No numbers in filename, assume disc 1, track 1
+					Disc = 1
+					Track = 1
+				TrackInfoMap[TrackName] = (Disc, Track, Filename)
 
 			ScriptTags = Soup.select(Config.PageContentSelector)
 			if not ScriptTags:
