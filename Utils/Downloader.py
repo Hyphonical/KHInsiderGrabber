@@ -84,14 +84,14 @@ async def DownloadFiles(Urls: list[tuple[str, list[str]]], AlbumId: str, MaxConc
 									ProgressBar.remove_task(TaskId)  # Remove completed task
 									return
 
-						except (httpx.RequestError, httpx.TimeoutException, ValueError) as E:
+						except (httpx.RequestError, httpx.HTTPStatusError, httpx.TimeoutException, ValueError) as E:
 							if Attempt == MaxRetries - 1:
 								Logger.warning(f'Failed attempt for {Filename} with URL {Url}: {E}')
 							else:
 								Logger.warning(f'Retry {Attempt + 1}/{MaxRetries} for {Filename} with URL {Url}: {E}')
 								await asyncio.sleep(1)  # Brief delay before retry
 					else:
-						continue  # Try next URL
+						continue  # Try next Url
 					break  # Success, exit URL loop
 				else:
 					# All URLs failed

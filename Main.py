@@ -73,7 +73,7 @@ async def ExtractFromUrl(Url: str) -> tuple[list[tuple[str, str, int, int, str]]
 
 			# 🌱 Extract unique prefixes for vgmsite URLs from the page.
 			Prefixes = set(re.findall(r'https?://([a-z]*)\.?vgmsite\.com', str(Soup)))
-			BaseUrls = [f'https://{Prefix}vgmsite.com/soundtracks' if Prefix else 'https://vgmsite.com/soundtracks' for Prefix in Prefixes]
+			BaseUrls = [f'https://{Prefix}.vgmsite.com/soundtracks' if Prefix else 'https://vgmsite.com/soundtracks' for Prefix in Prefixes]
 			if not BaseUrls:
 				BaseUrls = ['https://vgmsite.com/soundtracks']
 			Logger.info(f'Found prefixes: {list(Prefixes)}')
