@@ -83,7 +83,15 @@ async def ExtractFromUrl(Url: str) -> list[tuple[str, str, int, int, str]]:
 				Filename = os.path.basename(DecodedHref)
 				Match = re.search(Config.TrackFilePattern, Filename)
 				if Match:
-					Disc, Track = map(int, Match.groups())
+					Groups = Match.groups()
+					if Groups[1] is None:
+						# No disc specified, assume disc 1 and use the single number as track
+						Disc = 1
+						Track = int(Groups[0])
+					else:
+						# Disc-track format
+						Disc = int(Groups[0])
+						Track = int(Groups[1])
 					TrackInfoMap[TrackName] = (Disc, Track, Filename)
 				else:
 					Logger.warning(f'Could not parse track info from href: {Href}')

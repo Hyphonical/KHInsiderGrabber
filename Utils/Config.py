@@ -17,7 +17,7 @@ class Config:
 	StringReplacementPattern = r'var *(_\w+)\=\["(.*?)"\];'
 	TrackInfoPattern = r'\{"track":\d+,"name":"([^"]*)","length":"[^"]*","file":"([^"]*)"\}'
 	AlbumIdPattern = r'\/album\/([^\/]+)'
-	TrackFilePattern = r'(\d+)-(\d+)[ .].*\.mp3'
+	TrackFilePattern = r'(\d+)(?:-(\d+))?[ .].*\.mp3'
 
 	# 🌱 Parsing
 	PageContentSelector = 'div#pageContent script'
