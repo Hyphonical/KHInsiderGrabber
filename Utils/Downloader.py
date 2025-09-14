@@ -75,7 +75,6 @@ async def DownloadFiles(Urls: list[tuple[str, str]], AlbumId: str, MaxConcurrenc
 						Response.raise_for_status()
 						ProgressBar.update(TaskId, completed=1, description=f'[green]✓[/green] {ProgressBar.tasks[TaskId].description}')
 						Logger.info(f'Successfully validated: {Filename}')
-						ProgressBar.remove_task(TaskId)
 						return
 					else:
 						# 📥 Download file with a GET request
@@ -92,16 +91,15 @@ async def DownloadFiles(Urls: list[tuple[str, str]], AlbumId: str, MaxConcurrenc
 										ProgressBar.update(TaskId, advance=len(Chunk))
 							ProgressBar.update(TaskId, description=f'[green]✓[/green] {ProgressBar.tasks[TaskId].description}')
 							Logger.info(f'Successfully downloaded: {Filename}')
-							ProgressBar.remove_task(TaskId)
 							return
 			except (httpx.RequestError, httpx.HTTPStatusError) as E:
 				if Attempt < MaxRetries - 1:
 					Logger.warning(f'Retry {Attempt + 1}/{MaxRetries} for {Filename}: {E}')
-					await asyncio.sleep(1)
+					await asyncio.sleep(Attempt + 1) # 💡 Exponential backoff
 				else:
 					ProgressBar.update(TaskId, description=f'[red]✗[/red] {ProgressBar.tasks[TaskId].description}')
-					Logger.error(f'Failed to process {Filename} after {MaxRetries} attempts: {E}')
-					ProgressBar.remove_task(TaskId)
+					Logger.error(f'Failed to process {Filename} after {MaxRetries} attempts.')
+					return # 💡 Return to prevent removing task again
 
 	# 🚀 Create and run all tasks concurrently
 	Semaphore = asyncio.Semaphore(MaxConcurrency)
@@ -114,5 +112,7 @@ async def DownloadFiles(Urls: list[tuple[str, str]], AlbumId: str, MaxConcurrenc
 					Description = f'({Index + 1}/{TotalFiles}) {Filename}'
 					TaskId = ProgressBar.add_task(Description, total=1 if DryRun else None, start=True)
 					await ProcessUrl(Filename, Url, TaskId, ProgressBar)
+					if TaskId in ProgressBar.task_ids: # 💡 Safely remove task
+						ProgressBar.remove_task(TaskId)
 			Tasks.append(asyncio.create_task(StartTask(Filename, Url, Index)))
 		await asyncio.gather(*Tasks)

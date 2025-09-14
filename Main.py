@@ -95,27 +95,34 @@ async def Main():
 	LinkIds.sort(key=lambda x: x[0])  # Sort by track number
 	LongestName = max((len(Name) for _, Name, _ in LinkIds), default=0) + 2
 	DownloadURLs = []
+	UsedLinkIds = set() # 💡 Track used link IDs to prevent reuse
+
 	for RawMp3 in FileNames:
 		# Get absolute track number
 		AbsoluteTrack = AbsoluteTracks.get(RawMp3, None)
 
 		MatchedLink = None
 		if AbsoluteTrack is not None:
+			# 🎯 Find a direct match using the absolute track number
 			for TrackNum, Name, LinkId in LinkIds:
-				if TrackNum == AbsoluteTrack:
+				if TrackNum == AbsoluteTrack and LinkId not in UsedLinkIds:
 					MatchedLink = (TrackNum, Name, LinkId)
 					break
 
-		# Fallback to fuzzy matching if absolute track didn't match
+		# 🔍 Fallback to fuzzy matching if no direct match was found
 		if not MatchedLink:
-			MatchedLink = FuzzyMatchFilename(RawMp3, LinkIds)
+			# 💡 Create a list of available links that haven't been used yet
+			AvailableLinks = [link for link in LinkIds if link[2] not in UsedLinkIds]
+			MatchedLink = FuzzyMatchFilename(RawMp3, AvailableLinks)
 			if MatchedLink:
 				Logger.info(f'🔍 Fuzzy matched "{RawMp3}" to "{MatchedLink[1]}"')
-			else:
-				Logger.warning(f'🚩 No match found for "{RawMp3}", skipping')
-				continue
+
+		if not MatchedLink:
+			Logger.warning(f'🚩 No match found for "{RawMp3}", skipping')
+			continue
 
 		TrackNum, Name, LinkId = MatchedLink
+		UsedLinkIds.add(LinkId) # Mark this link ID as used
 
 		# 🔄 Fully decode any double-encoded sequences
 		CleanMp3 = FullyUnquote(RawMp3)
