@@ -3,6 +3,7 @@ import re
 # ⚙️ Configuration settings
 class Config:
 	# 🌱 General
+	DryRun = False
 	Headers = {'User-Agent': 'KHInsider/2.0'}
 	DownloadChunkSize = 8192
 	Timeout = 30.0

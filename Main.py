@@ -65,16 +65,29 @@ async def Main():
 	FileNames = ExtractMP3(Content)
 	Logger.info(f'🎵 Found {len(FileNames)} tracks')
 
-	# 📀 Determine number of discs
-	Discs = 0
+	# 📀 Determine number of discs and compute absolute track numbers
+	DiscFiles = {}
 	for FileName in FileNames:
 		Match = re.match(Config.TrackFilePattern, FileName)
 		if Match:
 			DiscNum = int(Match.group(1)) if Match.group(1) else 1
-			if DiscNum > Discs:
-				Discs = DiscNum
+			TrackNum = int(Match.group(2)) if Match.group(2) else int(Match.group(1))
+			if DiscNum not in DiscFiles:
+				DiscFiles[DiscNum] = []
+			DiscFiles[DiscNum].append((TrackNum, FileName))
 
+	Discs = len(DiscFiles)
 	Logger.info(f'📀 Found {Discs} disc(s)')
+
+	# Compute absolute track numbers assuming sequential numbering across discs
+	CumulativeTracks = 0
+	AbsoluteTracks = {}
+	for Disc in sorted(DiscFiles.keys()):
+		Tracks = sorted(DiscFiles[Disc], key=lambda x: x[0])
+		for TrackNum, FileName in Tracks:
+			AbsoluteTrack = CumulativeTracks + TrackNum
+			AbsoluteTracks[FileName] = AbsoluteTrack
+		CumulativeTracks += len(Tracks)
 
 	# 🪪 Get link IDs and domain from unpacked scripts
 	LinkIds, Domain = ExtractScriptAndIds(Content)
@@ -83,20 +96,17 @@ async def Main():
 	LongestName = max((len(Name) for _, Name, _ in LinkIds), default=0) + 2
 	DownloadURLs = []
 	for RawMp3 in FileNames:
-		# Try track number matching first
-		Match = re.match(Config.TrackFilePattern, RawMp3)
-		TrackNumFromFile = None
-		if Match:
-			TrackNumFromFile = int(Match.group(2)) if Match.group(2) else int(Match.group(1))
+		# Get absolute track number
+		AbsoluteTrack = AbsoluteTracks.get(RawMp3, None)
 
 		MatchedLink = None
-		if TrackNumFromFile:
+		if AbsoluteTrack is not None:
 			for TrackNum, Name, LinkId in LinkIds:
-				if TrackNum == TrackNumFromFile:
+				if TrackNum == AbsoluteTrack:
 					MatchedLink = (TrackNum, Name, LinkId)
 					break
 
-		# Fallback to fuzzy matching if track number didn't match
+		# Fallback to fuzzy matching if absolute track didn't match
 		if not MatchedLink:
 			MatchedLink = FuzzyMatchFilename(RawMp3, LinkIds)
 			if MatchedLink:
@@ -113,8 +123,8 @@ async def Main():
 		# 🎯 Local filename (human readable, spaces not %20)
 		FlacFilename = CleanMp3.replace('.mp3', '.flac')
 
-		# 🌐 URL filename (single encoding only)
-		EncodedFilename = urllib.parse.quote(FlacFilename, safe='-._()')
+		# 🌐 URL filename (single encoding only, encode parentheses)
+		EncodedFilename = urllib.parse.quote(FlacFilename, safe='-._')
 
 		DownloadUrl = f'https://{Domain}/soundtracks/{AlbumName}/{LinkId}/{EncodedFilename}'
 		DownloadURLs.append((FlacFilename, DownloadUrl))
