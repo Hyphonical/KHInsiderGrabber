@@ -16,15 +16,18 @@ def FuzzyMatchFilename(Filename: str, LinkIds: list[tuple[int, str, str]], Cutof
 	Returns:
 		tuple[int, str, str] | None: Best match or None if no good match.
 	'''
-	# Fully unquote the filename to handle encoded characters like %2520
+	# 🔄 Fully unquote the filename to handle encoded characters like %2520
 	UnquotedFilename = FullyUnquote(Filename)
-	# Clean filename: remove track/disc prefix and extension
-	CleanName = re.sub(r'^\d+(?:-\d+)?[ .]*', '', UnquotedFilename).replace('.mp3', '').strip()
+	# 🧹 Clean filename: remove track number prefix and extension for better matching
+	CleanName = re.sub(r'^\d+[-.]?\d*[ .]*', '', UnquotedFilename).replace('.mp3', '').strip()
+
 	TrackNames = [Name for _, Name, _ in LinkIds]
 	Matches = difflib.get_close_matches(CleanName, TrackNames, n=1, cutoff=Cutoff)
+
 	if Matches:
 		MatchedName = Matches[0]
-		for TrackNum, Name, LinkId in LinkIds:
-			if Name == MatchedName:
-				return (TrackNum, Name, LinkId)
+		# 🎯 Find the corresponding full link tuple
+		for Link in LinkIds:
+			if Link[1] == MatchedName:
+				return Link
 	return None

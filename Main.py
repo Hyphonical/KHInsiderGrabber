@@ -65,64 +65,27 @@ async def Main():
 	FileNames = ExtractMP3(Content)
 	Logger.info(f'🎵 Found {len(FileNames)} tracks')
 
-	# 📀 Determine number of discs and compute absolute track numbers
-	DiscFiles = {}
-	for FileName in FileNames:
-		Match = re.match(Config.TrackFilePattern, FileName)
-		if Match:
-			DiscNum = int(Match.group(1)) if Match.group(1) else 1
-			TrackNum = int(Match.group(2)) if Match.group(2) else int(Match.group(1))
-			if DiscNum not in DiscFiles:
-				DiscFiles[DiscNum] = []
-			DiscFiles[DiscNum].append((TrackNum, FileName))
-
-	Discs = len(DiscFiles)
-	Logger.info(f'📀 Found {Discs} disc(s)')
-
-	# Compute absolute track numbers assuming sequential numbering across discs
-	CumulativeTracks = 0
-	AbsoluteTracks = {}
-	for Disc in sorted(DiscFiles.keys()):
-		Tracks = sorted(DiscFiles[Disc], key=lambda x: x[0])
-		for TrackNum, FileName in Tracks:
-			AbsoluteTrack = CumulativeTracks + TrackNum
-			AbsoluteTracks[FileName] = AbsoluteTrack
-		CumulativeTracks += len(Tracks)
-
 	# 🪪 Get link IDs and domain from unpacked scripts
 	LinkIds, Domain = ExtractScriptAndIds(Content)
 	Logger.info(f'🔖 Found {len(LinkIds)} link IDs from scripts')
-	LinkIds.sort(key=lambda x: x[0])  # Sort by track number
-	LongestName = max((len(Name) for _, Name, _ in LinkIds), default=0) + 2
+
+	# 💡 Create a mutable list of available links to match against
+	AvailableLinks = list(LinkIds)
+	LongestName = max((len(Name) for _, Name, _ in AvailableLinks), default=0) + 2
 	DownloadURLs = []
-	UsedLinkIds = set() # 💡 Track used link IDs to prevent reuse
 
-	for RawMp3 in FileNames:
-		# Get absolute track number
-		AbsoluteTrack = AbsoluteTracks.get(RawMp3, None)
-
-		MatchedLink = None
-		if AbsoluteTrack is not None:
-			# 🎯 Find a direct match using the absolute track number
-			for TrackNum, Name, LinkId in LinkIds:
-				if TrackNum == AbsoluteTrack and LinkId not in UsedLinkIds:
-					MatchedLink = (TrackNum, Name, LinkId)
-					break
-
-		# 🔍 Fallback to fuzzy matching if no direct match was found
-		if not MatchedLink:
-			# 💡 Create a list of available links that haven't been used yet
-			AvailableLinks = [link for link in LinkIds if link[2] not in UsedLinkIds]
-			MatchedLink = FuzzyMatchFilename(RawMp3, AvailableLinks)
-			if MatchedLink:
-				Logger.info(f'🔍 Fuzzy matched "{RawMp3}" to "{MatchedLink[1]}"')
+	for RawMp3 in sorted(FileNames):
+		# 🎯 Match filename to an available link
+		MatchedLink = FuzzyMatchFilename(RawMp3, AvailableLinks)
 
 		if not MatchedLink:
 			Logger.warning(f'🚩 No match found for "{RawMp3}", skipping')
 			continue
 
+		# 💡 Remove the matched link to prevent it from being used again
+		AvailableLinks.remove(MatchedLink)
+
 		TrackNum, Name, LinkId = MatchedLink
-		UsedLinkIds.add(LinkId) # Mark this link ID as used
 
 		# 🔄 Fully decode any double-encoded sequences
 		CleanMp3 = FullyUnquote(RawMp3)
