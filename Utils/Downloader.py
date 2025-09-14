@@ -60,7 +60,7 @@ async def DownloadFiles(Urls: list[tuple[str, str]], AlbumId: str, MaxConcurrenc
 
 				for Attempt in range(MaxRetries):
 					try:
-						async with httpx.AsyncClient(headers=Config.Headers, timeout=30.0, http2=True) as Client:
+						async with httpx.AsyncClient(headers=Config.Headers, timeout=Config.Timeout, http2=True) as Client:
 							async with Client.stream('GET', Url) as Response:
 								Response.raise_for_status()
 								TotalSize = int(Response.headers.get('Content-Length', 0))

@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import html
 import sys
-import os
 import re
 
 # 📥 Custom modules
@@ -13,24 +12,87 @@ from Utils.Downloader import DownloadFiles
 from Utils.Unpacker import UnpackScript
 from Utils.Config import Config
 from Utils.Logger import Logger
-from bs4 import BeautifulSoup
 import httpx
 
-# 💡 Fully unquote a URL string
-def FullyUnquote(Url: str) -> str:
+# 💡 Fully unquote repeatedly (handles %2520 -> %20 -> space)
+def FullyUnquote(Value: str) -> str:
+	'''
+	⛏️ Repeatedly unquote a percent-encoded string until stable.
+	Example:
+		'%2520' -> '%20' -> ' '
+	'''
+	Previous = Value
 	while True:
-		UnquotedUrl = urllib.parse.unquote(Url)
-		if UnquotedUrl == Url:
-			return UnquotedUrl
-		Url = UnquotedUrl
+		Decoded = urllib.parse.unquote(Previous)
+		if Decoded == Previous:
+			return Decoded
+		Previous = Decoded
 
-# 💡 Extract packed strings
-def ExtractPackedStrings(ScriptContent: str) -> list:
+# 💡 Extract the content of a given URL (now async)
+async def ExtractContent(Url: str) -> str:
+	'''
+	⛏️ Extract the content of a given URL asynchronously.
+	Args:
+		Url (str): The URL to extract content from.
+	Returns:
+		str: The content of the URL as a string.
+	Example:
+		>>> await ExtractContent('https://downloads.khinsider.com/game-soundtracks/album/five-nights-at-freddy-s-fnaf')
+		'<!DOCTYPE html>...'
+	'''
+	async with httpx.AsyncClient(http2=True) as Client:
+		Response = await Client.get(Url, headers=Config.Headers, timeout=Config.Timeout)
+		if Response.status_code == 200:
+			return Response.text
+		else:
+			Logger.error(f'Failed to fetch URL: {Url} with status code {Response.status_code}')
+			return ''
+
+# 💡 Extract MP3 links from a given URL content
+def ExtractMP3(Content: str) -> list[str]:
+	'''
+	⛏️ Extract MP3 links from a given URL content.
+	Args:
+		Content (str): The HTML content of the URL to extract MP3 links from.
+	Returns:
+		list[str]: A list of extracted MP3 links.
+	Example:
+		>>> ExtractMP3('<html>...</html>')
+		['Ambience%25202.mp3', 'Ballasthummedium2.mp3', ...]
+	'''
+	Matches = re.findall(r'<a[^>]+href=["\'].*\/([^"\']+\.mp3)["\']', Content, re.IGNORECASE)
+	if Matches:
+		Matches = list(set(Matches))
+		Matches.sort()
+		return Matches
+	else:
+		Logger.warning('No MP3 links found in the content')
+		return []
+
+# 💡 Extract packed strings from script content
+def ExtractPackedStrings(ScriptContent: str) -> list[tuple[str, int, int, list[str]]]:
+	'''
+	⛏️ Extract packed strings and their parameters from script content.
+	Args:
+		ScriptContent (str): The script content to parse.
+	Returns:
+		list[tuple[str, int, int, list[str]]]: List of (packed_string, A, C, K) tuples.
+	'''
 	Matches = re.findall(Config.PackedStringPattern, ScriptContent, re.DOTALL)
 	return [(Packed, int(A), int(C), KStr.split('|')) for Packed, A, C, KStr in Matches]
 
-# 💡 Extract link IDs from unpacked script
-def ExtractLinkIds(UnpackedScript: str, TrackInfoMap: dict) -> list[tuple[str, str, int, int, str]]:
+# 💡 Extract link IDs from unpacked script using regex
+def ExtractLinkIds(UnpackedScript: str) -> list[tuple[str, str]]:
+	'''
+	⛏️ Extract song names and link IDs from unpacked script.
+	Args:
+		UnpackedScript (str): The unpacked JavaScript string.
+	Returns:
+		list[tuple[str, str]]: List of (song_name, link_id) tuples.
+	Example:
+		>>> ExtractLinkIds('...unpacked script...')
+		[('Song Name', 'link_id'), ...]
+	'''
 	Matches = re.findall(Config.TrackInfoPattern, UnpackedScript)
 	LinkIds = []
 	for Name, Url in Matches:
@@ -39,141 +101,76 @@ def ExtractLinkIds(UnpackedScript: str, TrackInfoMap: dict) -> list[tuple[str, s
 			Parts = Url.split('/')
 			if len(Parts) > 4:
 				LinkId = Parts[-2]
-				if Name in TrackInfoMap:
-					Disc, Track, Filename = TrackInfoMap[Name]
-					LinkIds.append((Name, LinkId, Track, Disc, Filename))
-				else:
-					Logger.warning(f'Could not find track "{Name}" in the page tracklist.')
+				LinkIds.append((Name, LinkId))
+			else:
+				Logger.warning(f'Invalid URL format for "{Name}": {Url}')
 	return LinkIds
 
-# 💡 Generate direct download links with a selected base
-def GenerateDownloadLinks(LinkIds: list[tuple[str, str, int, int, str]], AlbumId: str, Base: str) -> list[tuple[str, str]]:
-	if not LinkIds:
-		return []
-	Links = []
-	for _, LinkId, _, _, Filename in LinkIds:
-		FlacFilename = Filename.replace('.mp3', '.flac')
-		Encoded = urllib.parse.quote(FlacFilename, safe='/')
-		Links.append((FlacFilename, f'{Base}/{AlbumId}/{LinkId}/{Encoded}'))
-	return Links
+# 💡 Extract domain from unpacked script using regex
+def ExtractDomain(UnpackedScript: str) -> str:
+	'''
+	⛏️ Extract the domain from the unpacked script.
+	Args:
+		UnpackedScript (str): The unpacked JavaScript string.
+	Returns:
+		str: The extracted domain (e.g., 'vgmsite.com').
+	Example:
+		>>> ExtractDomain('...unpacked script...')
+		'vgmsite.com'
+	'''
+	Match = Config.DomainPattern.search(UnpackedScript)
+	if Match:
+		return Match.group(1)
+	else:
+		Logger.warning('Domain not found in unpacked script')
+		return Config.DefaultDomain  # Use config fallback
 
-# 💡 Fetch content and extract link IDs
-async def ExtractFromUrl(Url: str) -> tuple[list[tuple[str, str, int, int, str]], dict, list[list[str]]]:
-	try:
-		async with httpx.AsyncClient(headers=Config.Headers, timeout=30.0, http2=True) as Client:
-			Response = await Client.get(Url)
-			Response.raise_for_status()
-			Soup = BeautifulSoup(Response.content, 'html.parser')
+# 💡 Extract and unpack scripts, then get link IDs
+def ExtractScriptAndIds(Content: str) -> tuple[list[tuple[str, str]], str]:
+	'''
+	⛏️ Extract scripts, unpack them, and get link IDs and domain.
+	Args:
+		Content (str): The HTML content to extract scripts from.
+	Returns:
+		tuple: (list of (song_name, link_id) tuples, domain string).
+	Example:
+		>>> ExtractScriptAndIds('<html>...</html>')
+		([('Song Name', 'link_id'), ...], 'vgmsite.com')
+	'''
+	# Find script tags
+	ScriptTags = re.findall(r'<script[^>]*>(.*?)</script>', Content, re.DOTALL)
+	if not ScriptTags:
+		Logger.warning('No script tags found')
+		return [], ''
 
-			TrackInfoMap: dict[str, tuple[int, int, str]] = {}
-			for Link in Soup.select(Config.TracklistSelector):
-				TrackName = html.unescape(Link.text)
-				Href = Link.get('href', '')
-				DecodedHref = FullyUnquote(Href)  # type: ignore
-				Filename = os.path.basename(DecodedHref)
-				Match = re.search(Config.TrackFilePattern, Filename)
-				if Match:
-					Groups = Match.groups()
-					if Groups[1] is None:
-						Disc = 1
-						Track = int(Groups[0])
-					else:
-						Disc = int(Groups[0])
-						Track = int(Groups[1])
-				else:
-					Disc = 1
-					Track = 1
-				TrackInfoMap[TrackName] = (Disc, Track, Filename)
+	AllLinkIds = []
+	Domain = ''
+	for ScriptContent in ScriptTags:
+		if Config.PackedScriptIdentifier in ScriptContent:
+			PackedList = ExtractPackedStrings(ScriptContent)
+			for Packed, A, C, K in PackedList:
+				try:
+					Unpacked = UnpackScript(Packed, A, C, K)
+					if not Domain:
+						Domain = ExtractDomain(Unpacked)
+					LinkIds = ExtractLinkIds(Unpacked)
+					AllLinkIds.extend(LinkIds)
+				except Exception as E:
+					Logger.error(f'Failed to unpack script: {E}')
 
-			ScriptTags = Soup.select(Config.PageContentSelector)
-			if not ScriptTags:
-				Logger.error(f'ExtractFromUrl: No script tags found in div#pageContent at {Url}')
-				return [], {}, []
-			ScriptContent = next(
-				(Tag.string for Tag in ScriptTags if Tag.string and Config.PackedScriptIdentifier in Tag.string),
-				None
-			)
-			if not ScriptContent:
-				Logger.error(f'ExtractFromUrl: No packed script found at {Url}')
-				return [], {}, []
+	if not AllLinkIds:
+		Logger.warning('No link IDs found in any script')
+	return AllLinkIds, Domain
 
-			TokenTables: list[list[str]] = []
-			LinkIds: list[tuple[str, str, int, int, str]] = []
-			for Packed, A, C, K in ExtractPackedStrings(ScriptContent):
-				TokenTables.append(K)
-				Unpacked = UnpackScript(Packed, A, C, K)
-				LinkIds.extend(ExtractLinkIds(Unpacked, TrackInfoMap))
-
-			return LinkIds, TrackInfoMap, TokenTables
-	except httpx.RequestError as E:
-		Logger.error(f'ExtractFromUrl: Failed to fetch URL {Url}: {E}')
-		return [], {}, []
-
-# 💡 Discover candidate base URLs from token tables
-def DiscoverCandidateBases(TokenTables: list[list[str]]) -> list[str]:
-	Candidates: list[str] = []
-	Seen: set[str] = set()
-	# Always include root
-	Root = 'https://vgmsite.com/soundtracks'
-	Candidates.append(Root)
-	Seen.add(Root)
-	Ignore = {'com', 'track', 'tracks', 'soundtracks', 'album', 'file', 'mp3', 'flac', ''}
-	for Table in TokenTables:
-		for i, Tok in enumerate(Table):
-			if Tok == 'vgmsite' and i + 1 < len(Table):
-				Next = Table[i + 1].strip().lower()
-				if Next not in Ignore and re.fullmatch(r'[a-z0-9]+', Next):
-					Url = f'https://{Next}.vgmsite.com/soundtracks'
-					if Url not in Seen:
-						Candidates.append(Url)
-						Seen.add(Url)
-	# Also handle cases where prefix precedes vgmsite (rare)
-		for i, Tok in enumerate(Table):
-			if Tok == 'vgmsite' and i - 1 >= 0:
-				Prev = Table[i - 1].strip().lower()
-				if Prev not in Ignore and re.fullmatch(r'[a-z0-9]+', Prev):
-					Url = f'https://{Prev}.vgmsite.com/soundtracks'
-					if Url not in Seen:
-						Candidates.append(Url)
-						Seen.add(Url)
-	return Candidates
-
-# 💡 Select first working base by probing a sample track
-async def SelectWorkingBase(AlbumId: str, LinkIds: list[tuple[str, str, int, int, str]], Bases: list[str]) -> str:
-	if not LinkIds:
-		return Config.BaseUrl
-	Sample = LinkIds[0]
-	_, LinkId, _, _, Filename = Sample
-	TestFlac = Filename.replace('.mp3', '.flac')
-	Encoded = urllib.parse.quote(TestFlac, safe='/')
-	async with httpx.AsyncClient(headers=Config.Headers, timeout=15.0) as Client:
-		for Base in Bases:
-			TestUrl = f'{Base}/{AlbumId}/{LinkId}/{Encoded}'
-			try:
-				# Prefer HEAD; fallback to GET if needed
-				Resp = await Client.head(TestUrl)
-				if Resp.status_code == 405:
-					Resp = await Client.get(TestUrl, headers={'Range': 'bytes=0-0', **Config.Headers})
-				if Resp.status_code < 400:
-					Logger.info(f'Selected base URL: {Base}')
-					return Base
-				else:
-					Logger.debug(f'Base probe failed ({Resp.status_code}): {Base}')
-			except httpx.RequestError as E:
-				Logger.debug(f'Base probe exception {Base}: {E}')
-	Logger.warning('Falling back to default base (none validated).')
-	return Config.BaseUrl
-
-# 🧪 Main execution logic
 async def Main():
 	class CustomFormatter(RichHelpFormatter):
 		def __init__(self, *args, **kwargs):
 			super().__init__(*args, **kwargs)
-			self.width = 120
+			self.width = Config.CustomFormatterWidth
 
 	Parser = argparse.ArgumentParser(
-		description='🎵 Download FLAC albums from downloads.khinsider.com.',
-		epilog='Example: python Main.py https://downloads.khinsider.com/game-soundtracks/album/super-mario-galaxy-2',
+		description=Config.Description,
+		epilog=Config.ExampleEpilog.format(sys.argv[0]),
 		formatter_class=CustomFormatter
 	)
 	Parser.add_argument('Url', metavar='<url>', type=str, help='Full album URL.')
@@ -188,34 +185,78 @@ async def Main():
 	Match = re.search(Config.AlbumIdPattern, AlbumUrl)
 	if not Match:
 		Logger.error('Invalid album URL format.')
-		exit(1)
-	AlbumId = Match.group(1)
+		sys.exit(1)
+	AlbumName = Match.group(1)
 
-	Logger.info(f'Extracting from: {AlbumId}')
-	LinkIds, TrackInfoMap, TokenTables = await ExtractFromUrl(AlbumUrl)
-	if LinkIds:
-		Bases = DiscoverCandidateBases(TokenTables)
-		if len(Bases) > 1:
-			Logger.info(f'Candidate bases: {Bases}')
-		WorkingBase = await SelectWorkingBase(AlbumId, LinkIds, Bases)
-		Logger.info(
-			f'Extracted {len(LinkIds)} tracks over '
-			f'{len(set(Disc for _, _, _, Disc, _ in LinkIds))} disc(s).'
-		)
-		DownloadLinks = GenerateDownloadLinks(LinkIds, AlbumId, WorkingBase)
-		Logger.info('Generated download links:')
-		for Filename, _ in DownloadLinks:
-			Logger.info(f'  - {Filename}')
-		Logger.info('Starting download...')
-		await DownloadFiles(DownloadLinks, AlbumId)
-		Logger.info('All downloads completed.')
-	else:
-		Logger.warning('Could not extract any song IDs.')
+	# 🌱 Main execution
+	Logger.info(f'🎬 Processing album: {AlbumName}')
+	# 📡 Fetch metadata and album content concurrently
+	MetadataUrl = Config.MetadataUrlTemplate.format(AlbumName)
+	Metadata, Content = await asyncio.gather(
+		ExtractContent(MetadataUrl),
+		ExtractContent(AlbumUrl)
+	)
 
-# 🚀 Entry
+	if Metadata:
+		for Line in Metadata.splitlines():
+			if Match := Config.NamePattern.match(Line):
+				Logger.info(f'🎮 Game: {Match.group(1)}')
+			elif Match := Config.YearPattern.match(Line):
+				Logger.info(f'📅 Year: {Match.group(1)}')
+			elif Match := Config.PlatformsPattern.match(Line):
+				Logger.info(f'🚀 Platforms: {Match.group(1)}')
+			elif Match := Config.DevelopedByPattern.match(Line):
+				Logger.info(f'👷 Developed by: {Match.group(1)}')
+			elif Match := Config.PublishedByPattern.match(Line):
+				Logger.info(f'🏢 Published by: {Match.group(1)}')
+
+	# 🏷️ Get MP3 file names
+	FileNames = ExtractMP3(Content)
+	Logger.info(f'🎵 Found {len(FileNames)} tracks')
+
+	# 📀 Determine number of discs
+	Discs = 0
+	for FileName in FileNames:
+		Match = re.match(Config.TrackFilePattern, FileName)
+		if Match:
+			DiscNum = int(Match.group(1)) if Match.group(1) else 1
+			if DiscNum > Discs:
+				Discs = DiscNum
+
+	Logger.info(f'📀 Found {Discs} disc(s)')
+
+	# 🪪 Get link IDs and domain from unpacked scripts
+	LinkIds, Domain = ExtractScriptAndIds(Content)
+	LongestName = max((len(Name) for Name, _ in LinkIds), default=0) + 2
+	DownloadURLs = []
+	for Name, LinkId in LinkIds:
+		Index = LinkIds.index((Name, LinkId))
+		RawMp3 = FileNames[Index]
+
+		# 🔄 Fully decode any double-encoded sequences
+		CleanMp3 = FullyUnquote(RawMp3)
+
+		# 🎯 Local filename (human readable, spaces not %20)
+		FlacFilename = CleanMp3.replace('.mp3', '.flac')
+
+		# 🌐 URL filename (single encoding only)
+		EncodedFilename = urllib.parse.quote(FlacFilename, safe='-._()')
+
+		DownloadUrl = f'https://{Domain}/soundtracks/{AlbumName}/{LinkId}/{EncodedFilename}'
+		DownloadURLs.append((FlacFilename, DownloadUrl))
+		Logger.info(f'💿 Song: {Name.ljust(LongestName)} | ID: {LinkId}')
+
+	# 📥 Start downloading
+	Logger.info('Starting download...')
+	await DownloadFiles(DownloadURLs, AlbumName)
+	Logger.info('All downloads completed.')
+
 if __name__ == '__main__':
 	try:
 		asyncio.run(Main())
 	except KeyboardInterrupt:
-		Logger.info('Operation cancelled by user.')
-		exit(0)
+		Logger.info('Process interrupted by user. Exiting...')
+		sys.exit(0)
+	except Exception as E:
+		Logger.error(f'An unexpected error occurred: {E}')
+		sys.exit(1)

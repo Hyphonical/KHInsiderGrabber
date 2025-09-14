@@ -14,7 +14,8 @@ LogLevel = logging.INFO
 class Highlighter(RegexHighlighter):
 	base_style = 'Logger.'
 	highlights = [
-		r'(?P<Url>https?://[^\s]+)'
+		r'(?P<Url>https?://[^\s]+)',
+		r'ID: (?P<LinkID>[a-z]{8})'
 	]
 
 
@@ -27,7 +28,8 @@ def InitLogging():
 		'logging.level.warning': '#F5D7A3',
 		'logging.level.error': '#F5A3A3',
 		'logging.level.critical': '#ffc6ff',
-		'Logger.Url': '#F5D7A3'
+		'Logger.Url': '#F5D7A3',
+		'Logger.LinkID': '#B3D7EC',
 	}
 	Console = RichConsole(
 		theme=Theme(ThemeDict),
