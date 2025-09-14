@@ -65,7 +65,7 @@ async def DownloadFiles(Urls: list[tuple[str, str]], AlbumId: str, MaxConcurrenc
 		]
 
 	# 🔨 Define a worker task for processing each URL
-	async def ProcessUrl(Filename: str, Url: str, TaskId, ProgressBar):
+	async def ProcessUrl(Filename: str, Url: str, TaskId, ProgressBar, Description: str):
 		for Attempt in range(MaxRetries):
 			try:
 				async with httpx.AsyncClient(headers=Config.Headers, timeout=Config.Timeout, http2=True) as Client:
@@ -73,7 +73,7 @@ async def DownloadFiles(Urls: list[tuple[str, str]], AlbumId: str, MaxConcurrenc
 						# 🧪 Validate URL with a HEAD request
 						Response = await Client.head(Url)
 						Response.raise_for_status()
-						ProgressBar.update(TaskId, completed=1, description=f'[green]✓[/green] {ProgressBar.tasks[TaskId].description}')
+						ProgressBar.update(TaskId, completed=1, description=f'[green]✓[/green] {Description}')
 						Logger.info(f'Successfully validated: {Filename}')
 						return
 					else:
@@ -89,7 +89,7 @@ async def DownloadFiles(Urls: list[tuple[str, str]], AlbumId: str, MaxConcurrenc
 									async for Chunk in Response.aiter_bytes():
 										File.write(Chunk)
 										ProgressBar.update(TaskId, advance=len(Chunk))
-							ProgressBar.update(TaskId, description=f'[green]✓[/green] {ProgressBar.tasks[TaskId].description}')
+							ProgressBar.update(TaskId, description=f'[green]✓[/green] {Description}')
 							Logger.info(f'Successfully downloaded: {Filename}')
 							return
 			except (httpx.RequestError, httpx.HTTPStatusError) as E:
@@ -97,7 +97,7 @@ async def DownloadFiles(Urls: list[tuple[str, str]], AlbumId: str, MaxConcurrenc
 					Logger.warning(f'Retry {Attempt + 1}/{MaxRetries} for {Filename}: {E}')
 					await asyncio.sleep(Attempt + 1) # 💡 Exponential backoff
 				else:
-					ProgressBar.update(TaskId, description=f'[red]✗[/red] {ProgressBar.tasks[TaskId].description}')
+					ProgressBar.update(TaskId, description=f'[red]✗[/red] {Description}')
 					Logger.error(f'Failed to process {Filename} after {MaxRetries} attempts.')
 					return # 💡 Return to prevent removing task again
 
@@ -111,7 +111,7 @@ async def DownloadFiles(Urls: list[tuple[str, str]], AlbumId: str, MaxConcurrenc
 				async with Semaphore:
 					Description = f'({Index + 1}/{TotalFiles}) {Filename}'
 					TaskId = ProgressBar.add_task(Description, total=1 if DryRun else None, start=True)
-					await ProcessUrl(Filename, Url, TaskId, ProgressBar)
+					await ProcessUrl(Filename, Url, TaskId, ProgressBar, Description)
 					if TaskId in ProgressBar.task_ids: # 💡 Safely remove task
 						ProgressBar.remove_task(TaskId)
 			Tasks.append(asyncio.create_task(StartTask(Filename, Url, Index)))
