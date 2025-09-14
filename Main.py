@@ -2,165 +2,16 @@
 import urllib.parse
 import argparse
 import asyncio
-import html
-import sys
 import re
+import sys
 
 # 📥 Custom modules
+from Utils.Extracter import ExtractContent, ExtractMP3, ExtractScriptAndIds, FullyUnquote
+from Utils.Matcher import FuzzyMatchFilename
 from rich_argparse import RichHelpFormatter
 from Utils.Downloader import DownloadFiles
-from Utils.Unpacker import UnpackScript
 from Utils.Config import Config
 from Utils.Logger import Logger
-import httpx
-
-# 💡 Fully unquote repeatedly (handles %2520 -> %20 -> space)
-def FullyUnquote(Value: str) -> str:
-	'''
-	⛏️ Repeatedly unquote a percent-encoded string until stable.
-	Example:
-		'%2520' -> '%20' -> ' '
-	'''
-	Previous = Value
-	while True:
-		Decoded = urllib.parse.unquote(Previous)
-		if Decoded == Previous:
-			return Decoded
-		Previous = Decoded
-
-# 💡 Extract the content of a given URL (now async)
-async def ExtractContent(Url: str) -> str:
-	'''
-	⛏️ Extract the content of a given URL asynchronously.
-	Args:
-		Url (str): The URL to extract content from.
-	Returns:
-		str: The content of the URL as a string.
-	Example:
-		>>> await ExtractContent('https://downloads.khinsider.com/game-soundtracks/album/five-nights-at-freddy-s-fnaf')
-		'<!DOCTYPE html>...'
-	'''
-	async with httpx.AsyncClient(http2=True) as Client:
-		Response = await Client.get(Url, headers=Config.Headers, timeout=Config.Timeout)
-		if Response.status_code == 200:
-			return Response.text
-		else:
-			Logger.error(f'Failed to fetch URL: {Url} with status code {Response.status_code}')
-			return ''
-
-# 💡 Extract MP3 links from a given URL content
-def ExtractMP3(Content: str) -> list[str]:
-	'''
-	⛏️ Extract MP3 links from a given URL content.
-	Args:
-		Content (str): The HTML content of the URL to extract MP3 links from.
-	Returns:
-		list[str]: A list of extracted MP3 links.
-	Example:
-		>>> ExtractMP3('<html>...</html>')
-		['Ambience%25202.mp3', 'Ballasthummedium2.mp3', ...]
-	'''
-	Matches = re.findall(r'<a[^>]+href=["\'].*\/([^"\']+\.mp3)["\']', Content, re.IGNORECASE)
-	if Matches:
-		Matches = list(set(Matches))
-		Matches.sort()
-		return Matches
-	else:
-		Logger.warning('No MP3 links found in the content')
-		return []
-
-# 💡 Extract packed strings from script content
-def ExtractPackedStrings(ScriptContent: str) -> list[tuple[str, int, int, list[str]]]:
-	'''
-	⛏️ Extract packed strings and their parameters from script content.
-	Args:
-		ScriptContent (str): The script content to parse.
-	Returns:
-		list[tuple[str, int, int, list[str]]]: List of (packed_string, A, C, K) tuples.
-	'''
-	Matches = re.findall(Config.PackedStringPattern, ScriptContent, re.DOTALL)
-	return [(Packed, int(A), int(C), KStr.split('|')) for Packed, A, C, KStr in Matches]
-
-# 💡 Extract link IDs from unpacked script using regex
-def ExtractLinkIds(UnpackedScript: str) -> list[tuple[str, str]]:
-	'''
-	⛏️ Extract song names and link IDs from unpacked script.
-	Args:
-		UnpackedScript (str): The unpacked JavaScript string.
-	Returns:
-		list[tuple[str, str]]: List of (song_name, link_id) tuples.
-	Example:
-		>>> ExtractLinkIds('...unpacked script...')
-		[('Song Name', 'link_id'), ...]
-	'''
-	Matches = re.findall(Config.TrackInfoPattern, UnpackedScript)
-	LinkIds = []
-	for Name, Url in Matches:
-		Name = html.unescape(Name)
-		if any(Domain in Url for Domain in Config.ValidUrlDomains):
-			Parts = Url.split('/')
-			if len(Parts) > 4:
-				LinkId = Parts[-2]
-				LinkIds.append((Name, LinkId))
-			else:
-				Logger.warning(f'Invalid URL format for "{Name}": {Url}')
-	return LinkIds
-
-# 💡 Extract domain from unpacked script using regex
-def ExtractDomain(UnpackedScript: str) -> str:
-	'''
-	⛏️ Extract the domain from the unpacked script.
-	Args:
-		UnpackedScript (str): The unpacked JavaScript string.
-	Returns:
-		str: The extracted domain (e.g., 'vgmsite.com').
-	Example:
-		>>> ExtractDomain('...unpacked script...')
-		'vgmsite.com'
-	'''
-	Match = Config.DomainPattern.search(UnpackedScript)
-	if Match:
-		return Match.group(1)
-	else:
-		Logger.warning('Domain not found in unpacked script')
-		return Config.DefaultDomain  # Use config fallback
-
-# 💡 Extract and unpack scripts, then get link IDs
-def ExtractScriptAndIds(Content: str) -> tuple[list[tuple[str, str]], str]:
-	'''
-	⛏️ Extract scripts, unpack them, and get link IDs and domain.
-	Args:
-		Content (str): The HTML content to extract scripts from.
-	Returns:
-		tuple: (list of (song_name, link_id) tuples, domain string).
-	Example:
-		>>> ExtractScriptAndIds('<html>...</html>')
-		([('Song Name', 'link_id'), ...], 'vgmsite.com')
-	'''
-	# Find script tags
-	ScriptTags = re.findall(r'<script[^>]*>(.*?)</script>', Content, re.DOTALL)
-	if not ScriptTags:
-		Logger.warning('No script tags found')
-		return [], ''
-
-	AllLinkIds = []
-	Domain = ''
-	for ScriptContent in ScriptTags:
-		if Config.PackedScriptIdentifier in ScriptContent:
-			PackedList = ExtractPackedStrings(ScriptContent)
-			for Packed, A, C, K in PackedList:
-				try:
-					Unpacked = UnpackScript(Packed, A, C, K)
-					if not Domain:
-						Domain = ExtractDomain(Unpacked)
-					LinkIds = ExtractLinkIds(Unpacked)
-					AllLinkIds.extend(LinkIds)
-				except Exception as E:
-					Logger.error(f'Failed to unpack script: {E}')
-
-	if not AllLinkIds:
-		Logger.warning('No link IDs found in any script')
-	return AllLinkIds, Domain
 
 async def Main():
 	class CustomFormatter(RichHelpFormatter):
@@ -204,7 +55,7 @@ async def Main():
 			elif Match := Config.YearPattern.match(Line):
 				Logger.info(f'📅 Year: {Match.group(1)}')
 			elif Match := Config.PlatformsPattern.match(Line):
-				Logger.info(f'🚀 Platforms: {Match.group(1)}')
+				Logger.info(f'🚀 Platform(s): {Match.group(1)}')
 			elif Match := Config.DevelopedByPattern.match(Line):
 				Logger.info(f'👷 Developed by: {Match.group(1)}')
 			elif Match := Config.PublishedByPattern.match(Line):
@@ -227,11 +78,34 @@ async def Main():
 
 	# 🪪 Get link IDs and domain from unpacked scripts
 	LinkIds, Domain = ExtractScriptAndIds(Content)
-	LongestName = max((len(Name) for Name, _ in LinkIds), default=0) + 2
+	Logger.info(f'🔖 Found {len(LinkIds)} link IDs from scripts')
+	LinkIds.sort(key=lambda x: x[0])  # Sort by track number
+	LongestName = max((len(Name) for _, Name, _ in LinkIds), default=0) + 2
 	DownloadURLs = []
-	for Name, LinkId in LinkIds:
-		Index = LinkIds.index((Name, LinkId))
-		RawMp3 = FileNames[Index]
+	for RawMp3 in FileNames:
+		# Try track number matching first
+		Match = re.match(Config.TrackFilePattern, RawMp3)
+		TrackNumFromFile = None
+		if Match:
+			TrackNumFromFile = int(Match.group(2)) if Match.group(2) else int(Match.group(1))
+
+		MatchedLink = None
+		if TrackNumFromFile:
+			for TrackNum, Name, LinkId in LinkIds:
+				if TrackNum == TrackNumFromFile:
+					MatchedLink = (TrackNum, Name, LinkId)
+					break
+
+		# Fallback to fuzzy matching if track number didn't match
+		if not MatchedLink:
+			MatchedLink = FuzzyMatchFilename(RawMp3, LinkIds)
+			if MatchedLink:
+				Logger.info(f'🔍 Fuzzy matched "{RawMp3}" to "{MatchedLink[1]}"')
+			else:
+				Logger.warning(f'🚩 No match found for "{RawMp3}", skipping')
+				continue
+
+		TrackNum, Name, LinkId = MatchedLink
 
 		# 🔄 Fully decode any double-encoded sequences
 		CleanMp3 = FullyUnquote(RawMp3)
@@ -245,6 +119,14 @@ async def Main():
 		DownloadUrl = f'https://{Domain}/soundtracks/{AlbumName}/{LinkId}/{EncodedFilename}'
 		DownloadURLs.append((FlacFilename, DownloadUrl))
 		Logger.info(f'💿 Song: {Name.ljust(LongestName)} | ID: {LinkId}')
+
+	# 📊 Log matching summary
+	MatchedCount = len(DownloadURLs)
+	TotalFiles = len(FileNames)
+	if MatchedCount == TotalFiles:
+		Logger.info('💯 Successfully matched all songs to their IDs')
+	else:
+		Logger.warning(f'🚨 Matched {MatchedCount}/{TotalFiles} songs; some may be skipped')
 
 	# 📥 Start downloading
 	Logger.info('Starting download...')
