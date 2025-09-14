@@ -15,7 +15,7 @@ class Highlighter(RegexHighlighter):
 	base_style = 'Logger.'
 	highlights = [
 		r'(?P<Url>https?://[^\s]+)',
-		r'ID: (?P<LinkID>[a-z]{8})'
+		r'ID: (?P<LinkID>[a-z]+)'
 	]
 
 
