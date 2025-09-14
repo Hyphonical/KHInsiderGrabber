@@ -83,16 +83,13 @@ async def DownloadFiles(Urls: list[tuple[str, str]], AlbumId: str, MaxConcurrenc
 						FilePath = os.path.join(DownloadDirectory, Filename)
 						async with Client.stream('GET', Url) as Response:
 							Response.raise_for_status()
-							TotalSize = Response.headers.get('Content-Length')
-							if TotalSize is not None:
-								TotalSize = int(TotalSize)
-								if TotalSize > 0:
-									ProgressBar.update(TaskId, total=TotalSize)
-							# If TotalSize is None or 0, leave as indeterminate (total=None)
+							TotalSize = int(Response.headers.get('Content-Length', 0))
+							ProgressBar.update(TaskId, total=TotalSize)
 							with open(FilePath, 'wb') as File:
-								async for Chunk in Response.aiter_bytes():
-									File.write(Chunk)
-									ProgressBar.update(TaskId, advance=len(Chunk))
+								if TotalSize > 0:
+									async for Chunk in Response.aiter_bytes():
+										File.write(Chunk)
+										ProgressBar.update(TaskId, advance=len(Chunk))
 							ProgressBar.update(TaskId, description=f'[green]✓[/green] {ProgressBar.tasks[TaskId].description}')
 							Logger.info(f'Successfully downloaded: {Filename}')
 							ProgressBar.remove_task(TaskId)
